@@ -92,7 +92,15 @@ namespace TbhDpsMeter
         }
 
         /// <summary>Item (required) level; 0 if unknown.</summary>
-        public static int Level(int itemKey) => (int)Json.Num(Json.Get(Entry(itemKey), "l"));
+        /// <summary>Item (required) level; falls back to the item's family (see <see cref="FamilyEntry"/>,
+        /// the highest-level known sibling — the same real-world tier under a different guessed ItemKey)
+        /// if this exact ItemKey is unknown; 0 if the whole family is unknown.</summary>
+        public static int Level(int itemKey)
+        {
+            int l = (int)Json.Num(Json.Get(Entry(itemKey), "l"));
+            if (l > 0) return l;
+            return (int)Json.Num(Json.Get(FamilyEntry(itemKey), "l"));
+        }
 
         /// <summary>Icon path relative to the wiki's /game/gear/ root (e.g. "bow/BOW_310017.png"); falls back
         /// to a family sibling's (real, fetchable) path when this exact ItemKey is unknown — the wrong tier's
