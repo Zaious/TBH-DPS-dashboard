@@ -89,6 +89,7 @@ namespace TbhDpsMeter
         private static int _seenDownSeq, _seenUpSeq;           // last hook edge counts consumed by Poll
         private static bool _f9Edge, _pgUpEdge, _pgDnEdge;
         private static bool _fg;   // game window is foreground (refreshed each Poll; gates global input)
+        private static bool _prevFg = true;   // previous frame's foreground state, for the focus-loss edge
 
         private static bool Key(int vk) => (GetAsyncKeyState(vk) & 0x8000) != 0;
 
@@ -353,6 +354,21 @@ namespace TbhDpsMeter
                     UpdateHookLifecycle(h);
                 }
 
+                // The hook only processes WM_LBUTTONUP while the game is foreground (it must not
+                // swallow clicks meant for other apps). If focus leaves the game WHILE a swallowed
+                // press is still held (alt-tab, click another window, etc. without releasing first),
+                // the real button-up happens over a window the hook ignores, so it's never seen:
+                // _hookLbDown would stay stuck true forever, wedging every panel's drag state (a
+                // panel keeps re-snapping to the cursor every frame with _dragging never clearing —
+                // the ✕ button then can't be hit because the panel is still chasing the cursor).
+                // Treat a foreground-loss edge while the hook thinks the button is down as an
+                // implicit release so drag state always heals on refocus, not just when the game's
+                // own menu happens to force a reset (GameUiState.MenuOpen() already clears _dragging,
+                // which is why that "workaround" appears to fix it).
+                bool fgNow = GameIsForeground();
+                if (_hookInstalled && _hookLbDown && _prevFg && !fgNow) { _hookLbDown = false; _hookUpSeq++; }
+                _prevFg = fgNow;
+
                 if (_hookInstalled)
                 {
                     // Hook is the source of truth (GetAsyncKeyState goes blind once we swallow).
@@ -383,7 +399,7 @@ namespace TbhDpsMeter
                 // never sees them — Windows only routes WM_* messages to the focused window). Track the
                 // prev-states above as usual (so no stale edge fires on refocus) but suppress all edge
                 // outputs while another window has focus. Held-state (_down) is kept for drag release.
-                _fg = GameIsForeground();
+                _fg = fgNow;
                 if (!_fg)
                 {
                     _pressed = false; _mbPressed = false;
