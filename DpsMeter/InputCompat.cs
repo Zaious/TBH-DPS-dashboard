@@ -321,6 +321,8 @@ namespace TbhDpsMeter
         }
 
         private static int _polledFrame = -1;
+        private static float _nextHeartbeat;
+
         public static void Poll()
         {
             // run at most once per frame even if several components call it
@@ -328,6 +330,19 @@ namespace TbhDpsMeter
             if (frame == _polledFrame) return;
             _polledFrame = frame;
             EnsureMouseHook();
+
+            // Unattended heartbeat (no repro steps needed): the "clicks stop landing after a while"
+            // report has no known trigger yet. ResolveGameWindow() caches _window once found and only
+            // re-resolves if IsWindow() says it's gone — if the game ever creates a SECOND UnityWndClass
+            // window (or the cached hwnd survives but stops being the rendered one) this keeps returning
+            // the wrong handle forever, and every coordinate downstream is silently off. Logging Probe()
+            // periodically means the log around the next report has the actual hwnd/scale/hook state at
+            // the moment it broke, instead of only what a workaround-triggered reset looks like.
+            if (Time.realtimeSinceStartup >= _nextHeartbeat)
+            {
+                _nextHeartbeat = Time.realtimeSinceStartup + 15f;
+                Plugin.Logger?.LogInfo("[input][heartbeat] " + Probe() + $" hookInstalled={_hookInstalled} dragOwner={_dragOwner}");
+            }
             try
             {
                 if (GetCursorPos(out var p))
@@ -427,6 +442,26 @@ namespace TbhDpsMeter
 
         private static IntPtr ResolveGameWindow()
         {
+            // This game runs more than one UnityWndClass window (it stays docked near the taskbar — a
+            // heartbeat diag caught foreground=0x221DD2 class=UnityWndClass samePID while the cached
+            // handle was a DIFFERENT (or unset) one). EnumWindows' enumeration order isn't guaranteed to
+            // land on whichever one is actually interactive, so latching onto "the first one ever found"
+            // (the old behavior below) can silently pin every coordinate/foreground check to the wrong
+            // window for the rest of the session — every panel goes unclickable with no way to self-heal.
+            // Preferring "whichever OS foreground window belongs to this process" on every call instead of
+            // trusting a permanent cache means it re-syncs to whichever window is actually current each frame.
+            IntPtr fg = GetForegroundWindow();
+            if (fg != IntPtr.Zero)
+            {
+                GetWindowThreadProcessId(fg, out uint fgPid);
+                if (fgPid == (uint)Process.GetCurrentProcess().Id)
+                {
+                    _window = fg;
+                    _windowSource = "foreground/pid";
+                    return _window;
+                }
+            }
+
             if (_window != IntPtr.Zero && IsWindow(_window))
             {
                 return _window;
@@ -532,6 +567,19 @@ namespace TbhDpsMeter
         }
 
         public static string Probe()
-            => $"cursorGui={_pos} raw=({_rawX},{_rawY}) hwnd=0x{_window.ToInt64():X} source={_windowSource} client={_cw}x{_ch} screen={Screen.width}x{Screen.height} scale=({_sx:0.###},{_sy:0.###}) down={_down}";
+        {
+            IntPtr fg = GetForegroundWindow();
+            string fgInfo;
+            if (fg == _window) fgInfo = "SAME";
+            else
+            {
+                var cls = new StringBuilder(64);
+                GetClassName(fg, cls, cls.Capacity);
+                GetWindowThreadProcessId(fg, out uint fgPid);
+                uint myPid = (uint)Process.GetCurrentProcess().Id;
+                fgInfo = $"0x{fg.ToInt64():X} class={cls} {(fgPid == myPid ? "samePID" : "otherPID=" + fgPid)}";
+            }
+            return $"cursorGui={_pos} raw=({_rawX},{_rawY}) hwnd=0x{_window.ToInt64():X} source={_windowSource} client={_cw}x{_ch} screen={Screen.width}x{Screen.height} scale=({_sx:0.###},{_sy:0.###}) down={_down} foreground={fgInfo}";
+        }
     }
 }
